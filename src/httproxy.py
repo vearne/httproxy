@@ -63,13 +63,14 @@ import sys
 import threading
 from time import sleep
 import urlparse
+from counter import Counter
 
 from configparser import ConfigParser
 from docopt import docopt
 
 DEFAULT_LOG_FILENAME = "httproxy.log"
 HEADER_TERMINATOR = re.compile(r'\r\n\r\n')
-
+MAX_VALUE = 1000000
 
 class ProxyHandler(BaseHTTPRequestHandler):
     server_version = "TinyHTTPProxy/" + __version__
@@ -78,6 +79,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
     allowed_clients = ()
     verbose = False
     cache = False
+    counter = Counter()
+    # Limit frequency
+    limit_dict = {}
 
     def handle(self):
         ip, port = self.client_address
@@ -95,6 +99,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             host_port = netloc[:i], int(netloc[i + 1:])
         else:
             host_port = netloc, 80
+
+        # check frequency
+        limit = self.limit_dict.get(host_port[0], MAX_VALUE)
+        # Out of frequency
+        if self.counter.increment(host_port[0]) > limit:
+            self.send_error(403, "Out of frequency limit")
+            return 0
+
         self.server.logger.log(
             logging.DEBUG, "Connect to %s:%d", host_port[0], host_port[1])
         try:
@@ -420,6 +432,14 @@ def handle_configuration():
         for client in inifile['allowed-clients']:
             clients.append(client[2:])
         iniconf['<allowed-client>'] = clients
+    if not iniconf.get('<limit-frequency>'):
+        # copy values from INI but don't include --port etc.
+        inifile['DEFAULT'].clear()
+        dd = {}
+        for item in inifile['limit-frequency']:
+            dd[item[2:]] = int(inifile['limit-frequency'].get(item))
+
+        iniconf['<limit-frequency>'] = dd
     return read_from, iniconf
 
 
@@ -465,6 +485,7 @@ def main():
     else:
         logger.log(logging.INFO, "Any clients will be served...")
     ProxyHandler.verbose = args['--verbose']
+    ProxyHandler.limit_dict = args['<limit-frequency>']
     try:
         handle_pidfile(args['--pidfile'], logger)
     except RuntimeError:
